@@ -205,9 +205,13 @@ void KvQuantSparseAttnSharedkvMetadataCpuKernel::CalcSplitInfo(SplitContext &spl
 {
     // 计算每个batch的切分，统计是否为空batch，记录最后有效batch（每个batch的每个N2切分是一样的）
     SplitInfo &splitInfo = splitContext.splitInfo;
+    needInit_ = 0U;
     for (uint32_t bIdx = 0; bIdx < batchSize_; bIdx++) {
         uint32_t s1Size = GetS1SeqSize(bIdx);
         uint32_t s2Size = GetS2SeqSize(bIdx);
+        if (s1Size > s2Size) {
+            needInit_ = 1U;
+        }
         splitInfo.s1GBaseNum[bIdx] = (s1Size * groupSize_ + (mBaseSize_ - 1U)) / mBaseSize_;
         splitInfo.s1GTailSize[bIdx] = (s1Size * groupSize_) % mBaseSize_;
         splitInfo.s2BaseNum[bIdx] = (s2Size + s2BaseSize_ - 1U) / s2BaseSize_;
@@ -890,6 +894,7 @@ bool KvQuantSparseAttnSharedkvMetadataCpuKernel::BalanceSchedule(SplitResult &sp
 bool KvQuantSparseAttnSharedkvMetadataCpuKernel::GenMetadata(SplitResult &splitRes)
 {
     optiling::detail::SasMetadata* metadataPtr = (optiling::detail::SasMetadata*)metadata_->GetData();
+    metadataPtr->globalMetadata[GLOBAL_NEED_INIT_INDEX] = needInit_;
 
     // FA Metadata Generate
     if (isN128) {

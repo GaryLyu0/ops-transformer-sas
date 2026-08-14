@@ -381,6 +381,7 @@ private:
     bool isCFA = false;
     bool isSCFA = false;
     bool supportFd = false;
+    uint32_t needInit_ {0U};
     uint32_t sparseMode_ = 0;
     uint32_t attentionMode_ = 1;
     BlockCost<int64_t> typeCost_;

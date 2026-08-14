@@ -200,24 +200,28 @@ __aicore__ inline void KvQuantSparseAttnSharedkvScfa<CubeBlockType, VecBlockType
     // actQ->TND, actKV pa场景任意layout均有
     constInfo.isActualLenDimsKVNull = false;
 
-    constInfo.needInit = 0;
-    for (uint32_t bIdx = 0; bIdx < constInfo.bSize; bIdx++) {
-        int64_t s2Size;
-        GlobalTensor<int32_t> actualSeqLengthsKVGm;
-        actualSeqLengthsKVGm.SetGlobalBuffer((__gm__ int32_t *)sequsedKv);
-        s2Size = actualSeqLengthsKVGm.GetValue(bIdx);
-    
-        int64_t s1Size;
-        if constexpr (LAYOUT_T == SAS_LAYOUT::TND) {
-            GlobalTensor<int32_t> cuSeqlensQGm;
-            cuSeqlensQGm.SetGlobalBuffer((__gm__ int32_t *)cuSeqlensQ);
-            s1Size = cuSeqlensQGm.GetValue(bIdx + 1) - cuSeqlensQGm.GetValue(bIdx);
-        } else {
-            s1Size = constInfo.s1Size;
-        }
-        if (s1Size > s2Size) {
-            constInfo.needInit = 1;
-            break;
+    if constexpr (TEMPLATE_MODE == SASTemplateMode::CFA_TEMPLATE_MODE && LAYOUT_T == SAS_LAYOUT::TND) {
+        constInfo.needInit = metadataGm.GetValue(GetGlobalAttrAbsIndex(GLOBAL_NEED_INIT_INDEX)) != 0U;
+    } else {
+        constInfo.needInit = 0;
+        for (uint32_t bIdx = 0; bIdx < constInfo.bSize; bIdx++) {
+            int64_t s2Size;
+            GlobalTensor<int32_t> actualSeqLengthsKVGm;
+            actualSeqLengthsKVGm.SetGlobalBuffer((__gm__ int32_t *)sequsedKv);
+            s2Size = actualSeqLengthsKVGm.GetValue(bIdx);
+
+            int64_t s1Size;
+            if constexpr (LAYOUT_T == SAS_LAYOUT::TND) {
+                GlobalTensor<int32_t> cuSeqlensQGm;
+                cuSeqlensQGm.SetGlobalBuffer((__gm__ int32_t *)cuSeqlensQ);
+                s1Size = cuSeqlensQGm.GetValue(bIdx + 1) - cuSeqlensQGm.GetValue(bIdx);
+            } else {
+                s1Size = constInfo.s1Size;
+            }
+            if (s1Size > s2Size) {
+                constInfo.needInit = 1;
+                break;
+            }
         }
     }
 }
