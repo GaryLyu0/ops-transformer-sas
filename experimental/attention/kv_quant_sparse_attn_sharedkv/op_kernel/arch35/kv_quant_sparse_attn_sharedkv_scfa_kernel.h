@@ -49,7 +49,7 @@ public:
     __aicore__ inline void Process();
 private:
     __aicore__ inline void ProcessMainLoop();
-    __aicore__ inline void ParseTilingData(__gm__ uint8_t *cuSeqlensQ, __gm__ uint8_t *sequsedKv);
+    __aicore__ inline void ParseTilingData();
     __aicore__ inline void InitGlobalBuffer(__gm__ uint8_t *query, __gm__ uint8_t *oriKV, __gm__ uint8_t *cmpKV, __gm__ uint8_t *cmpSparseIndices,
         __gm__ uint8_t *oriBlockTable, __gm__ uint8_t *cmpBlockTable, __gm__ uint8_t *cuSeqlensQ,
         __gm__ uint8_t *sequsedQ, __gm__ uint8_t *sequsedKv, __gm__ uint8_t *sinks, __gm__ uint8_t *workspace,
@@ -144,7 +144,7 @@ __aicore__ inline void KvQuantSparseAttnSharedkvScfa<CubeBlockType, VecBlockType
     constInfo.s2BaseSize = 128;
 
     this->pipe = tPipe;
-    this->ParseTilingData(cuSeqlensQ, sequsedKv);
+    this->ParseTilingData();
     this->InitGlobalBuffer(query, oriKV, cmpKV, cmpSparseIndices, oriBlockTable, cmpBlockTable, cuSeqlensQ, sequsedQ, sequsedKv, sinks,
         workspace, tiling, tPipe); // gm设置
     vecBlock.InitVecBlock(tPipe, cuSeqlensQ, sequsedKv);
@@ -163,8 +163,7 @@ __aicore__ inline void KvQuantSparseAttnSharedkvScfa<CubeBlockType, VecBlockType
 }
 
 template <typename CubeBlockType, typename VecBlockType>
-__aicore__ inline void KvQuantSparseAttnSharedkvScfa<CubeBlockType, VecBlockType>::ParseTilingData(
-    __gm__ uint8_t *cuSeqlensQ, __gm__ uint8_t *sequsedKv)
+__aicore__ inline void KvQuantSparseAttnSharedkvScfa<CubeBlockType, VecBlockType>::ParseTilingData()
 {
     auto &sparseAttnSharedkvBaseParams = this->tilingData->baseParams;
     constInfo.bSize = sparseAttnSharedkvBaseParams.batchSize;
@@ -200,30 +199,7 @@ __aicore__ inline void KvQuantSparseAttnSharedkvScfa<CubeBlockType, VecBlockType
     // actQ->TND, actKV pa场景任意layout均有
     constInfo.isActualLenDimsKVNull = false;
 
-    if constexpr (TEMPLATE_MODE == SASTemplateMode::CFA_TEMPLATE_MODE && LAYOUT_T == SAS_LAYOUT::TND) {
-        constInfo.needInit = metadataGm.GetValue(GetGlobalAttrAbsIndex(GLOBAL_NEED_INIT_INDEX)) != 0U;
-    } else {
-        constInfo.needInit = 0;
-        for (uint32_t bIdx = 0; bIdx < constInfo.bSize; bIdx++) {
-            int64_t s2Size;
-            GlobalTensor<int32_t> actualSeqLengthsKVGm;
-            actualSeqLengthsKVGm.SetGlobalBuffer((__gm__ int32_t *)sequsedKv);
-            s2Size = actualSeqLengthsKVGm.GetValue(bIdx);
-
-            int64_t s1Size;
-            if constexpr (LAYOUT_T == SAS_LAYOUT::TND) {
-                GlobalTensor<int32_t> cuSeqlensQGm;
-                cuSeqlensQGm.SetGlobalBuffer((__gm__ int32_t *)cuSeqlensQ);
-                s1Size = cuSeqlensQGm.GetValue(bIdx + 1) - cuSeqlensQGm.GetValue(bIdx);
-            } else {
-                s1Size = constInfo.s1Size;
-            }
-            if (s1Size > s2Size) {
-                constInfo.needInit = 1;
-                break;
-            }
-        }
-    }
+    constInfo.needInit = metadataGm.GetValue(GetGlobalAttrAbsIndex(GLOBAL_NEED_INIT_INDEX)) != 0U;
 }
 
 template <typename CubeBlockType, typename VecBlockType>
