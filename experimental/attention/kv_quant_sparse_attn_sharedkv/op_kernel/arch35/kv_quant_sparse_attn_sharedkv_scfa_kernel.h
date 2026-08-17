@@ -67,6 +67,7 @@ private:
 
     const KvQuantSparseAttnSharedkvTilingData *__restrict tilingData;
     static constexpr uint64_t SYNC_MODE = 4;
+    static constexpr int64_t PIPELINE_FILL_TASK_NUM = 3;
     /* 核间通道 */
     BufferManager<BufferType::GM> v0ResGmBufferManager;
 
@@ -355,49 +356,64 @@ __aicore__ inline void KvQuantSparseAttnSharedkvScfa<CubeBlockType, VecBlockType
                 maxS2LoopCnt -= runParam.s2LoopEndIdx;
             }
             s2LoopLimit = runParam.s2LoopEndIdx - 1;
-            for (int64_t s2LoopCount = 0; s2LoopCount <= s2LoopLimit; ++s2LoopCount) {
+            int64_t s2LoopCount = 0;
+            if (taskId < PIPELINE_FILL_TASK_NUM) {
+                // Prologue: only task 0/1/2 can reach this loop.
+                for (; s2LoopCount <= s2LoopLimit && taskId < PIPELINE_FILL_TASK_NUM;
+                    ++s2LoopCount) {
+                    RunInfo &runInfo1 = runInfo[taskId % 4];
+                    this->SetRunInfo(runInfo1, runParam, taskId, s2LoopCount, s2LoopLimit, multiCoreInnerIdx);
+                    if ASCEND_IS_AIV {
+                        this->vecBlock.ProcessVec0(
+                            v0ResGmBuffers.Get(runInfo1.taskIdMod3), runInfo1, this->constInfo);
+                        if (taskId > 1) {
+                            auto &runInfo2 = runInfo[(taskId + 2) % 4];
+                            this->vecBlock.ProcessVec1(this->l1PBuffers.Get(), this->bmm1Buffers.Get(), runInfo2,
+                                this->constInfo);
+                        }
+                    } else {
+                        if (taskId > 0) {
+                            RunInfo &runInfoPrev = runInfo[(taskId + 3) % 4];
+                            this->cubeBlock.IterateLoadQK(v0ResGmBuffers.Get(runInfoPrev.taskIdMod3),
+                                runInfoPrev, this->constInfo, isFirstLoop);
+                            isFirstLoop = false;
+                        }
+                        if (taskId > 1) {
+                            auto &runInfo2 = runInfo[(taskId + 2) % 4];
+                            RunInfo &runInfoNext = runInfo[(taskId + 3) % 4];
+                            this->cubeBlock.IterateBmm1(this->bmm1Buffers.Get(),
+                                v0ResGmBuffers.Get(runInfo2.taskIdMod3), true,
+                                runInfoNext, runInfo2, this->constInfo);
+                        }
+                    }
+                    ++taskId;
+                }
+            }
+
+            // Steady state: taskId >= 3, so every pipeline stage is valid.
+            for (; s2LoopCount <= s2LoopLimit; ++s2LoopCount) {
                 RunInfo &runInfo1 = runInfo[taskId % 4];
                 this->SetRunInfo(runInfo1, runParam, taskId, s2LoopCount, s2LoopLimit, multiCoreInnerIdx);
                 if ASCEND_IS_AIV {
                     this->vecBlock.ProcessVec0(
                         v0ResGmBuffers.Get(runInfo1.taskIdMod3), runInfo1, this->constInfo);
-                    if (taskId > 1) {
-                        auto &runInfo2 = runInfo[(taskId + 2) % 4];
-                        this->vecBlock.ProcessVec1(this->l1PBuffers.Get(), this->bmm1Buffers.Get(), runInfo2,
-                            this->constInfo);
-                    }
-                    if (taskId > 2) {
-                        RunInfo &runInfo3 = runInfo[(taskId + 1) % 4];
-                        this->vecBlock.ProcessVec2(this->bmm2Buffers.Get(), runInfo3, this->constInfo);
-                    }
+                    auto &runInfo2 = runInfo[(taskId + 2) % 4];
+                    this->vecBlock.ProcessVec1(this->l1PBuffers.Get(), this->bmm1Buffers.Get(), runInfo2,
+                        this->constInfo);
+                    RunInfo &runInfo3 = runInfo[(taskId + 1) % 4];
+                    this->vecBlock.ProcessVec2(this->bmm2Buffers.Get(), runInfo3, this->constInfo);
                 } else {
-                    if (taskId > 0) {
-                        RunInfo &runInfo1 = runInfo[(taskId + 3) % 4];
-                        this->cubeBlock.IterateLoadQK(
-                            v0ResGmBuffers.Get(runInfo1.taskIdMod3), runInfo1, this->constInfo, isFirstLoop);
-                        isFirstLoop = false;
-                    } else {
-                        if constexpr (IS_SPLIT_G) {
-                            if (taskId > 0 && maxS2LoopCnt > 0) {
-                                maxS2LoopCnt--;
-                                CrossCoreSetFlag<0, PIPE_MTE2>(10);
-                                CrossCoreWaitFlag<0, PIPE_MTE2>(10);
-                            }
-                        }
-                    }
-                    if (taskId > 1) {
-                        auto &runInfo2 = runInfo[(taskId + 2) % 4];
-                        RunInfo &runInfoNext = runInfo[(taskId + 3) % 4];
-                        this->cubeBlock.IterateBmm1(
-                            this->bmm1Buffers.Get(),
-                                v0ResGmBuffers.Get(runInfo2.taskIdMod3),
-                            true, runInfoNext, runInfo2, this->constInfo);
-                    }
-                    if (taskId > 2) {
-                        RunInfo &runInfo3 = runInfo[(taskId + 1) % 4];
-                        this->cubeBlock.IterateBmm2(this->bmm2Buffers.Get(), this->l1PBuffers,
-                            runInfo3, this->constInfo);
-                    }
+                    RunInfo &runInfoPrev = runInfo[(taskId + 3) % 4];
+                    this->cubeBlock.IterateLoadQK(
+                        v0ResGmBuffers.Get(runInfoPrev.taskIdMod3), runInfoPrev, this->constInfo, false);
+                    auto &runInfo2 = runInfo[(taskId + 2) % 4];
+                    RunInfo &runInfoNext = runInfo[(taskId + 3) % 4];
+                    this->cubeBlock.IterateBmm1(this->bmm1Buffers.Get(),
+                        v0ResGmBuffers.Get(runInfo2.taskIdMod3), true,
+                        runInfoNext, runInfo2, this->constInfo);
+                    RunInfo &runInfo3 = runInfo[(taskId + 1) % 4];
+                    this->cubeBlock.IterateBmm2(this->bmm2Buffers.Get(), this->l1PBuffers,
+                        runInfo3, this->constInfo);
                 }
                 ++taskId;
             }
