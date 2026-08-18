@@ -59,10 +59,11 @@ private:
     __aicore__ inline void ComputeConstexpr();
     __aicore__ inline void SetRunInfo(RunInfo &runInfo, RunParamStr &runParam, int64_t taskId, int64_t s2LoopCount,
                                       int64_t s2LoopLimit, int64_t multiCoreInnerIdx);
+    __aicore__ inline void InitRunInfoInvariant(RunInfo &runInfo, const RunParamStr &runParam,
+                                                int64_t s2LoopLimit, int64_t multiCoreInnerIdx);
     __aicore__ inline void ComputeBmm1Tail(RunInfo &runInfo, RunParamStr &runParam);
     __aicore__ inline void InitUniqueConstInfo();
     __aicore__ inline void ComputeAxisIdxByBnAndGs1(int64_t bnIndex, int64_t gS1Index, RunParamStr &runParam);
-    __aicore__ inline void InitUniqueRunInfo(const RunParamStr &runParam, RunInfo &runInfo);
     TPipe *pipe;
 
     const KvQuantSparseAttnSharedkvTilingData *__restrict tilingData;
@@ -465,7 +466,12 @@ template <typename CubeBlockType, typename VecBlockType>
 __aicore__ inline void KvQuantSparseAttnSharedkvScfa<CubeBlockType, VecBlockType>::SetRunInfo(
     RunInfo &runInfo, RunParamStr &runParam, int64_t taskId, int64_t s2LoopCount, int64_t s2LoopLimit, int64_t multiCoreInnerIdx)
 {
-    if (s2LoopCount < runParam.oriKvLoopEndIdx) {
+    if (runInfo.multiCoreInnerIdx != multiCoreInnerIdx) {
+        this->InitRunInfoInvariant(runInfo, runParam, s2LoopLimit, multiCoreInnerIdx);
+    }
+
+    runInfo.isCmp = s2LoopCount >= runInfo.oriKvLoopEndIdx;
+    if (!runInfo.isCmp) {
         runInfo.s2StartIdx = runParam.s2LineStartIdx;
         runInfo.s2EndIdx = runParam.s2LineEndIdx;
     } else {
@@ -473,57 +479,49 @@ __aicore__ inline void KvQuantSparseAttnSharedkvScfa<CubeBlockType, VecBlockType
         runInfo.s2EndIdx = runParam.s2CmpLineEndIdx;
     }
     runInfo.s2LoopCount = s2LoopCount;
-    if (runInfo.multiCoreInnerIdx != multiCoreInnerIdx) {
-        runInfo.s1oIdx = runParam.s1oIdx;
-        runInfo.boIdx = runParam.boIdx;
-        runInfo.n2oIdx = runParam.n2oIdx;
-        runInfo.goIdx = runParam.goIdx;
-        runInfo.multiCoreInnerIdx = multiCoreInnerIdx;
-        runInfo.multiCoreIdxMod2 = multiCoreInnerIdx & 1;
-        runInfo.multiCoreIdxMod3 = multiCoreInnerIdx % 3;
-    }
 
     runInfo.taskId = taskId;
     runInfo.taskIdMod2 = taskId & 1;
     runInfo.taskIdMod3 = taskId % 3;
-    runInfo.s2LoopLimit = s2LoopLimit;
-
-    runInfo.actualS1Size = runParam.actualS1Size;
-    runInfo.actualS2Size = runParam.actualS2Size;
-    runInfo.attentionOutOffset = runParam.attentionOutOffset;
-    runInfo.sOuterOffset = runParam.sOuterOffset;
     this->ComputeBmm1Tail(runInfo, runParam);
-    InitUniqueRunInfo(runParam, runInfo);
 }
 
 template <typename CubeBlockType, typename VecBlockType>
 __aicore__ inline void
-KvQuantSparseAttnSharedkvScfa<CubeBlockType, VecBlockType>::InitUniqueRunInfo(
-    const RunParamStr &runParam, RunInfo &runInfo)
+KvQuantSparseAttnSharedkvScfa<CubeBlockType, VecBlockType>::InitRunInfoInvariant(
+    RunInfo &runInfo, const RunParamStr &runParam, int64_t s2LoopLimit, int64_t multiCoreInnerIdx)
 {
-    InitTaskParamByRun<TEMPLATE_INTF_ARGS>(runParam, runInfo);
-}
+    runInfo.s1oIdx = runParam.s1oIdx;
+    runInfo.n2oIdx = runParam.n2oIdx;
+    runInfo.goIdx = runParam.goIdx;
+    runInfo.multiCoreInnerIdx = multiCoreInnerIdx;
+    runInfo.multiCoreIdxMod2 = multiCoreInnerIdx & 1;
+    runInfo.multiCoreIdxMod3 = multiCoreInnerIdx % 3;
+    runInfo.s2LoopLimit = s2LoopLimit;
+    runInfo.attentionOutOffset = runParam.attentionOutOffset;
+    runInfo.sOuterOffset = runParam.sOuterOffset;
 
-template <typename CubeBlockType, typename VecBlockType>
-__aicore__ inline void KvQuantSparseAttnSharedkvScfa<CubeBlockType, VecBlockType>::ComputeBmm1Tail(
-    RunInfo &runInfo, RunParamStr &runParam)
-{
-    // ------------------------S1 Base Related---------------------------
     runInfo.s1RealSize = runParam.s1RealSize;
     runInfo.halfS1RealSize = runParam.halfS1RealSize;
     runInfo.firstHalfS1RealSize = runParam.firstHalfS1RealSize;
     runInfo.mRealSize = runParam.mRealSize;
     runInfo.halfMRealSize = runParam.halfMRealSize;
     runInfo.firstHalfMRealSize = runParam.firstHalfMRealSize;
-
-    runInfo.vec2S1BaseSize = runInfo.halfS1RealSize;  // D>128 这里需要适配
+    runInfo.vec2S1BaseSize = runInfo.halfS1RealSize;
     runInfo.vec2MBaseSize = runInfo.halfMRealSize;
 
+    InitInvariantTaskParamByRun<TEMPLATE_INTF_ARGS>(runParam, runInfo);
+}
+
+template <typename CubeBlockType, typename VecBlockType>
+__aicore__ inline void KvQuantSparseAttnSharedkvScfa<CubeBlockType, VecBlockType>::ComputeBmm1Tail(
+    RunInfo &runInfo, RunParamStr &runParam)
+{
     // ------------------------S2 Base Related----------------------------
     runInfo.s2RealSize = constInfo.s2BaseSize;
     runInfo.s2AlignedSize = runInfo.s2RealSize;
-    int64_t curS2LoopCnt = (runInfo.s2LoopCount >= runParam.oriKvLoopEndIdx) ? \
-        (runInfo.s2LoopCount - runParam.oriKvLoopEndIdx) : runInfo.s2LoopCount;
+    int64_t curS2LoopCnt = runInfo.isCmp ?
+        (runInfo.s2LoopCount - runInfo.oriKvLoopEndIdx) : runInfo.s2LoopCount;
     if (runInfo.s2StartIdx + (curS2LoopCnt + 1) * runInfo.s2RealSize > runInfo.s2EndIdx) {
         runInfo.s2RealSize = runInfo.s2EndIdx - curS2LoopCnt * runInfo.s2RealSize - runInfo.s2StartIdx;
         runInfo.s2AlignedSize = Align(runInfo.s2RealSize);
