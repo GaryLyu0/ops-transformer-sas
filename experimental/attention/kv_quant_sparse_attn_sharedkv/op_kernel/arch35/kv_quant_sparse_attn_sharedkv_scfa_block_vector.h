@@ -190,11 +190,8 @@ __aicore__ inline void SCFABlockVec<TEMPLATE_ARGS>::GetRealCmpS2Idx(int64_t *tok
     uint64_t topkKIdx = s2IdxInBase + cmpS2LoopCnt * constInfo.s2BaseSize;
     for (uint64_t i = 0; i < 8; ++i) {
         uint64_t idx = topkBS1Idx + runInfo.s2StartIdx + topkKIdx + i;
-        if (likely((topkKIdx + i < constInfo.sparseBlockCount) && (s2IdxInBase + i < procS2End))) {
-            tokenData[i] = cmpSparseIndicesGm.GetValue(idx);
-        } else {
-            break;
-        }
+        tokenData[i] = likely((topkKIdx + i < constInfo.sparseBlockCount) && (s2IdxInBase + i < procS2End)) ?
+            cmpSparseIndicesGm.GetValue(idx) : -1;
     }
 }
 
@@ -215,11 +212,8 @@ __aicore__ inline void SCFABlockVec<TEMPLATE_ARGS>::GetRealS2Addr(int64_t *token
     GlobalTensor<int64_t> kvPhyAddrGm64 = kvPhyAddrGm.template ReinterpretCast<int64_t>();
     for (uint64_t i = 0; i < 8; ++i) {
         uint64_t idx = topkBS1Idx + runInfo.s2StartIdx + topkKIdx + i;
-        if (likely((topkKIdx + i < constInfo.sparseBlockCount) && (s2IdxInBase + i < procS2End))) {
-            tokenData[i] = kvPhyAddrGm64.GetValue(idx);
-        } else {
-            break;
-        }
+        tokenData[i] = likely((topkKIdx + i < constInfo.sparseBlockCount) && (s2IdxInBase + i < procS2End)) ?
+            kvPhyAddrGm64.GetValue(idx) : -1;
     }
 }
 
@@ -691,7 +685,7 @@ __aicore__ inline void SCFABlockVec<TEMPLATE_ARGS>::ProcessSparseKv(
         rls_buf(PIPE_MTE2, stage0InBufBufId[pingPongV0], false);
         LocalTensor<KV_T> kvInUb = stage0InBuf[pingPongV0].Get<KV_T>();
         while (dealRow < Min(16, procSize) && s2 < procS2End) { // 拷贝满16行或者遇到-1
-            int64_t tokenData[8] = {-1, -1, -1, -1, -1, -1, -1, -1}; // 拷贝进入的8个token的index
+            int64_t tokenData[8]; // 拷贝进入的8个token的index
             if constexpr (IS_VEC_S2PHYADDR) {
                 GetRealS2Addr(tokenData, s2, runInfo, constInfo);
             } else {
