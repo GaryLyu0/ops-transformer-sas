@@ -95,12 +95,13 @@ private:
         const RunInfo &runInfo, ConstInfo &constInfo);
     __aicore__ inline void ProcessNotSparseKv(Buffer<BufferType::GM, SyncType::CROSS_CORE_SYNC_BACKWARD> &v0ResGm,
         const RunInfo &runInfo, ConstInfo &constInfo);
-    __aicore__ inline void CalProcSize(const RunInfo &runInfo, ConstInfo &constInfo);
+    __aicore__ inline void CalProcSize(const RunInfo &runInfo, ConstInfo &constInfo, int64_t &procSize,
+        int64_t &procS2Start, int64_t &procS2End);
     __aicore__ inline int64_t GetkeyOffset(int64_t s2Idx, const RunInfo &runInfo, ConstInfo &constInfo);
     __aicore__ inline void GetRealCmpS2Idx(int64_t *tokenData, int64_t s2IdxInBase,
-        const RunInfo &runInfo, ConstInfo &constInfo);
+        int64_t procS2End, const RunInfo &runInfo, ConstInfo &constInfo);
     __aicore__ inline void GetRealS2Addr(int64_t *tokenData, int64_t s2IdxInBase,
-        const RunInfo &runInfo, ConstInfo &constInfo);
+        int64_t procS2End, const RunInfo &runInfo, ConstInfo &constInfo);
     __aicore__ inline void CopyInKvNotSparse(LocalTensor<KV_T> kvMergUb, int64_t dealRow,
         int64_t s2StartIdx, const RunInfo &runInfo, ConstInfo &constInfo);
     __aicore__ inline uint32_t CopyInKvSparse(LocalTensor<KV_T> kvInUb, int64_t startRow, int64_t *tokenData,
@@ -169,14 +170,11 @@ private:
     bool isSinks = false;
     uint32_t maxBlockNumPerBatch;
     uint32_t blockSize;
-    int64_t procSize;
-    int64_t procS2Start;
-    int64_t procS2End;
 };
 
 TEMPLATES_DEF_NO_DEFAULT
 __aicore__ inline void SCFABlockVec<TEMPLATE_ARGS>::GetRealCmpS2Idx(int64_t *tokenData,
-    int64_t s2IdxInBase, const RunInfo &runInfo, ConstInfo &constInfo)
+    int64_t s2IdxInBase, int64_t procS2End, const RunInfo &runInfo, ConstInfo &constInfo)
 {
     uint64_t topkBS1Idx = 0;
     if constexpr (LAYOUT_T == SAS_LAYOUT::TND) {
@@ -197,7 +195,7 @@ __aicore__ inline void SCFABlockVec<TEMPLATE_ARGS>::GetRealCmpS2Idx(int64_t *tok
 
 TEMPLATES_DEF_NO_DEFAULT
 __aicore__ inline void SCFABlockVec<TEMPLATE_ARGS>::GetRealS2Addr(int64_t *tokenData,
-    int64_t s2IdxInBase, const RunInfo &runInfo, ConstInfo &constInfo)
+    int64_t s2IdxInBase, int64_t procS2End, const RunInfo &runInfo, ConstInfo &constInfo)
 {
     uint64_t topkBS1Idx = 0;
     if constexpr (LAYOUT_T == SAS_LAYOUT::TND) {
@@ -506,6 +504,10 @@ __aicore__ inline void SCFABlockVec<TEMPLATE_ARGS>::ProcessNotSparseKv(
     Buffer<BufferType::GM, SyncType::CROSS_CORE_SYNC_BACKWARD> &v0ResGm,
     const RunInfo &runInfo, ConstInfo &constInfo)
 {
+    int64_t procSize;
+    int64_t procS2Start;
+    int64_t procS2End;
+    CalProcSize(runInfo, constInfo, procSize, procS2Start, procS2End);
     if (procSize == 0) {
         return;
     }
@@ -594,13 +596,13 @@ __aicore__ inline void SCFABlockVec<TEMPLATE_ARGS>::CopyInKvNotSparse(LocalTenso
 }
 
 TEMPLATES_DEF_NO_DEFAULT
-__aicore__ inline void SCFABlockVec<TEMPLATE_ARGS>::CalProcSize(const RunInfo &runInfo, ConstInfo &constInfo)
+__aicore__ inline void SCFABlockVec<TEMPLATE_ARGS>::CalProcSize(const RunInfo &runInfo, ConstInfo &constInfo,
+    int64_t &procSize, int64_t &procS2Start, int64_t &procS2End)
 {
     if constexpr (IS_SPLIT_G) {
         uint32_t aicIdx = constInfo.aivIdx >> 1U;
         uint32_t v0S2SizeFirstCore = CeilDiv(runInfo.s2RealSize, 2);
         uint32_t v0S2SizeSecondCore = runInfo.s2RealSize - v0S2SizeFirstCore;
-        int32_t vecCnt = (aicIdx % 2U == 0) ? (GetSubBlockIdx() == 0 ? 0 : 1) : (GetSubBlockIdx() == 0 ? 2 : 3);
         if (aicIdx % 2U == 0) {
             if (GetSubBlockIdx() == 0) {
                 procSize = CeilDiv(v0S2SizeFirstCore, 2);
@@ -646,7 +648,6 @@ __aicore__ inline void SCFABlockVec<TEMPLATE_ARGS>::ProcessVec0(
         blockSize = constInfo.oriBlockSize;
         maxBlockNumPerBatch = constInfo.oriMaxBlockNumPerBatch;
     }
-    CalProcSize(runInfo, constInfo);
     if constexpr (TEMPLATE_MODE == SASTemplateMode::SCFA_TEMPLATE_MODE) {
         if (isCmp) {
             ProcessSparseKv(v0ResGm, runInfo, constInfo);
@@ -665,6 +666,10 @@ __aicore__ inline void SCFABlockVec<TEMPLATE_ARGS>::ProcessSparseKv(
     Buffer<BufferType::GM, SyncType::CROSS_CORE_SYNC_BACKWARD> &v0ResGm,
     const RunInfo &runInfo, ConstInfo &constInfo)
 {
+    int64_t procSize;
+    int64_t procS2Start;
+    int64_t procS2End;
+    CalProcSize(runInfo, constInfo, procSize, procS2Start, procS2End);
     if (procSize == 0) {
         return;
     }
@@ -687,9 +692,9 @@ __aicore__ inline void SCFABlockVec<TEMPLATE_ARGS>::ProcessSparseKv(
         while (dealRow < Min(16, procSize) && s2 < procS2End) { // 拷贝满16行或者遇到-1
             int64_t tokenData[8]; // 拷贝进入的8个token的index
             if constexpr (IS_VEC_S2PHYADDR) {
-                GetRealS2Addr(tokenData, s2, runInfo, constInfo);
+                GetRealS2Addr(tokenData, s2, procS2End, runInfo, constInfo);
             } else {
-                GetRealCmpS2Idx(tokenData, s2, runInfo, constInfo);
+                GetRealCmpS2Idx(tokenData, s2, procS2End, runInfo, constInfo);
             }
             s2 += 8; // 每次搬运8行
             if (tokenData[0] == -1 && tokenData[1] == -1 && tokenData[2] == -1 && tokenData[3] == -1 &&
